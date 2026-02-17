@@ -15,8 +15,9 @@ cargo run -- update
 This will:
 1. Fetch your recent Garmin activities
 2. Download GPX files for runs near Saou (skips others automatically)
-3. Render all OSM trails with your GPS traces on top of OpenTopoMap tiles
-4. Output to `output/synclinal.png`
+3. Match GPS traces against OSM trail segments to compute coverage
+4. Render covered segments in orange, uncovered in white, over OpenTopoMap tiles
+5. Output to `output/synclinal.png`
 
 Re-run `update` after each new activity — it only downloads new GPX files.
 
@@ -45,6 +46,12 @@ cargo run -- render --no-cache           # force re-download of tiles and OSM da
 cargo run -- render --tile-provider openstreetmap
 ```
 
+### `debug` — Visual debug of trail segments
+
+```bash
+cargo run -- debug                       # each OSM segment in a different color
+```
+
 ### Options
 
 | Flag | Default | Description |
@@ -66,9 +73,13 @@ cargo run -- render --tile-provider openstreetmap
 1. Syncs activities from Garmin Connect, filtering by start coordinates to only download runs near the Synclinal de Saou
 2. Parses GPX files and filters track segments by bounding box
 3. Fetches OSM trail geometries (paths, tracks, footways) from the Overpass API
-4. Downloads and stitches OpenTopoMap tiles (contours + hillshading)
-5. Renders OSM trails as a light base layer, GPS traces as bright overlay
-6. Composites everything onto the tile background and outputs a print-ready PNG
+4. Splits OSM ways into segments at shared nodes (intersections) for precise per-segment coverage
+5. Interpolates GPS tracks (every 2m) and trail segments (every 5m) into point clouds
+6. Matches each segment sample point against GPS points within 10m using a spatial grid index
+7. Marks a segment as covered if ≥50% of its points match
+8. Downloads and stitches OpenTopoMap tiles (contours + hillshading)
+9. Renders covered segments in orange with glow, uncovered in white, with stats overlay
+10. Composites everything onto the tile background and outputs a print-ready PNG
 
 ## License
 

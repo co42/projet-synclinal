@@ -1,6 +1,7 @@
 mod config;
 mod garmin;
 mod gpx;
+mod matching;
 mod osm;
 mod render;
 mod tiles;
@@ -54,6 +55,25 @@ enum Commands {
         no_cache: bool,
     },
 
+    /// Debug: render map with raw GPS dots overlay
+    Debug {
+        /// Directory containing GPX files
+        #[arg(short, long, default_value = "activities")]
+        activities_dir: String,
+
+        /// Output file path
+        #[arg(short, long, default_value = "output/debug.png")]
+        output: String,
+
+        /// Tile zoom level
+        #[arg(short, long, default_value_t = config::DEFAULT_ZOOM)]
+        zoom: u32,
+
+        /// Tile provider
+        #[arg(short = 'p', long, default_value = "opentopomap")]
+        tile_provider: TileProvider,
+    },
+
     /// Sync new activities from Garmin and re-render the map
     Update {
         /// Directory to store GPX files
@@ -104,10 +124,11 @@ async fn do_render(
     provider: tiles::Provider,
 ) -> Result<()> {
     let client = build_client()?;
-    let trails = osm::fetch_trails(&client).await?;
+    let (_trails, segments) = osm::fetch_trails(&client).await?;
     let activities = gpx::load_activities(activities_dir)?;
+    let coverage = matching::compute_coverage(&segments, &activities);
     let tile_map = tiles::fetch_and_stitch(&client, zoom, provider).await?;
-    render::render_png(&tile_map, &trails, &activities, output)
+    render::render_png(&tile_map, &segments, &coverage, output)
 }
 
 #[tokio::main]
@@ -140,6 +161,19 @@ async fn main() -> Result<()> {
                 resolve_provider(&tile_provider),
             )
             .await?;
+        }
+
+        Commands::Debug {
+            activities_dir: _,
+            output,
+            zoom,
+            tile_provider,
+        } => {
+            let client = build_client()?;
+            let (_trails, segments) = osm::fetch_trails(&client).await?;
+            let tile_map =
+                tiles::fetch_and_stitch(&client, zoom, resolve_provider(&tile_provider)).await?;
+            render::render_debug_png(&tile_map, &segments, &output)?;
         }
 
         Commands::Update {
