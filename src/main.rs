@@ -1,4 +1,6 @@
 mod config;
+mod garmin;
+mod gpx;
 mod osm;
 mod render;
 mod tiles;
@@ -18,8 +20,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Sync activities from Garmin Connect
+    Sync {
+        /// Directory to store GPX files
+        #[arg(short, long, default_value = "activities")]
+        activities_dir: String,
+
+        /// Only sync activities since this date (YYYY-MM-DD)
+        #[arg(short, long, default_value = "2026-01-01")]
+        since: String,
+    },
+
     /// Render trail coverage map
     Render {
+        /// Directory containing GPX files
+        #[arg(short, long, default_value = "activities")]
+        activities_dir: String,
+
         /// Output file path
         #[arg(short, long, default_value = "output/synclinal.png")]
         output: String,
@@ -36,6 +53,29 @@ enum Commands {
         #[arg(long)]
         no_cache: bool,
     },
+
+    /// Sync new activities from Garmin and re-render the map
+    Update {
+        /// Directory to store GPX files
+        #[arg(short, long, default_value = "activities")]
+        activities_dir: String,
+
+        /// Only sync activities since this date (YYYY-MM-DD)
+        #[arg(short, long, default_value = "2026-01-01")]
+        since: String,
+
+        /// Output file path
+        #[arg(short, long, default_value = "output/synclinal.png")]
+        output: String,
+
+        /// Tile zoom level
+        #[arg(short, long, default_value_t = config::DEFAULT_ZOOM)]
+        zoom: u32,
+
+        /// Tile provider
+        #[arg(short = 'p', long, default_value = "opentopomap")]
+        tile_provider: TileProvider,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -44,34 +84,79 @@ enum TileProvider {
     Opentopomap,
 }
 
+fn resolve_provider(tp: &TileProvider) -> tiles::Provider {
+    match tp {
+        TileProvider::Openstreetmap => tiles::Provider::OpenStreetMap,
+        TileProvider::Opentopomap => tiles::Provider::OpenTopoMap,
+    }
+}
+
+fn build_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .user_agent("synclinal-trail-visualizer/0.1")
+        .build()?)
+}
+
+async fn do_render(
+    activities_dir: &str,
+    output: &str,
+    zoom: u32,
+    provider: tiles::Provider,
+) -> Result<()> {
+    let client = build_client()?;
+    let trails = osm::fetch_trails(&client).await?;
+    let activities = gpx::load_activities(activities_dir)?;
+    let tile_map = tiles::fetch_and_stitch(&client, zoom, provider).await?;
+    render::render_png(&tile_map, &trails, &activities, output)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Sync {
+            activities_dir,
+            since,
+        } => {
+            garmin::sync(&activities_dir, &since)?;
+        }
+
         Commands::Render {
+            activities_dir,
             output,
             zoom,
             tile_provider,
             no_cache,
         } => {
-            let provider = match tile_provider {
-                TileProvider::Openstreetmap => tiles::Provider::OpenStreetMap,
-                TileProvider::Opentopomap => tiles::Provider::OpenTopoMap,
-            };
-
             if no_cache {
                 osm::clear_cache();
                 tiles::clear_cache();
             }
+            do_render(
+                &activities_dir,
+                &output,
+                zoom,
+                resolve_provider(&tile_provider),
+            )
+            .await?;
+        }
 
-            let client = reqwest::Client::builder()
-                .user_agent("synclinal-trail-visualizer/0.1")
-                .build()?;
-
-            let trails = osm::fetch_trails(&client).await?;
-            let tile_map = tiles::fetch_and_stitch(&client, zoom, provider).await?;
-            render::render_png(&tile_map, &trails, &output)?;
+        Commands::Update {
+            activities_dir,
+            since,
+            output,
+            zoom,
+            tile_provider,
+        } => {
+            garmin::sync(&activities_dir, &since)?;
+            do_render(
+                &activities_dir,
+                &output,
+                zoom,
+                resolve_provider(&tile_provider),
+            )
+            .await?;
         }
     }
 

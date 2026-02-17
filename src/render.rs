@@ -2,14 +2,20 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
+use crate::gpx::Activity;
 use crate::osm::Trail;
 use crate::tiles::TileMap;
 
-pub fn render_png(tile_map: &TileMap, trails: &[Trail], output_path: &str) -> Result<()> {
+pub fn render_png(
+    tile_map: &TileMap,
+    trails: &[Trail],
+    activities: &[Activity],
+    output_path: &str,
+) -> Result<()> {
     let w = tile_map.width;
     let h = tile_map.height;
 
-    let svg_content = build_svg_overlay(tile_map, trails, w, h);
+    let svg_content = build_svg_overlay(tile_map, trails, activities, w, h);
 
     let overlay = rasterize_svg(&svg_content)?;
 
@@ -27,31 +33,35 @@ pub fn render_png(tile_map: &TileMap, trails: &[Trail], output_path: &str) -> Re
     Ok(())
 }
 
-fn build_svg_overlay(tile_map: &TileMap, trails: &[Trail], w: u32, h: u32) -> String {
+fn build_svg_overlay(
+    tile_map: &TileMap,
+    trails: &[Trail],
+    activities: &[Activity],
+    w: u32,
+    h: u32,
+) -> String {
     let mut svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">"##,
     );
 
+    // OSM trails — light gray base layer
     for trail in trails {
-        let points: Vec<(f64, f64)> = trail
-            .geometry
-            .0
-            .iter()
-            .map(|c| tile_map.project(c.x, c.y))
-            .collect();
-
-        if points.len() < 2 {
-            continue;
+        if let Some(d) = linestring_to_path(&trail.geometry.0, tile_map) {
+            svg.push_str(&format!(
+                r##"<path d="{d}" fill="none" stroke="white" stroke-width="1.5" stroke-opacity="0.4" stroke-linecap="round" stroke-linejoin="round"/>"##,
+            ));
         }
+    }
 
-        let mut d = format!("M{:.1},{:.1}", points[0].0, points[0].1);
-        for p in &points[1..] {
-            d.push_str(&format!(" L{:.1},{:.1}", p.0, p.1));
+    // GPS traces — bright overlay
+    for activity in activities {
+        for track in &activity.tracks {
+            if let Some(d) = linestring_to_path(&track.0, tile_map) {
+                svg.push_str(&format!(
+                    r##"<path d="{d}" fill="none" stroke="#FF4500" stroke-width="2.5" stroke-opacity="0.85" stroke-linecap="round" stroke-linejoin="round"/>"##,
+                ));
+            }
         }
-
-        svg.push_str(&format!(
-            r##"<path d="{d}" fill="none" stroke="#FF4500" stroke-width="2.5" stroke-opacity="0.85" stroke-linecap="round" stroke-linejoin="round"/>"##,
-        ));
     }
 
     // Attribution
@@ -71,6 +81,18 @@ fn build_svg_overlay(tile_map: &TileMap, trails: &[Trail], w: u32, h: u32) -> St
 
     svg.push_str("</svg>");
     svg
+}
+
+fn linestring_to_path(coords: &[geo_types::Coord<f64>], tile_map: &TileMap) -> Option<String> {
+    let points: Vec<(f64, f64)> = coords.iter().map(|c| tile_map.project(c.x, c.y)).collect();
+    if points.len() < 2 {
+        return None;
+    }
+    let mut d = format!("M{:.1},{:.1}", points[0].0, points[0].1);
+    for p in &points[1..] {
+        d.push_str(&format!(" L{:.1},{:.1}", p.0, p.1));
+    }
+    Some(d)
 }
 
 fn rasterize_svg(svg_content: &str) -> Result<resvg::tiny_skia::Pixmap> {
@@ -107,7 +129,6 @@ fn composite_images(
                 continue;
             }
 
-            // resvg outputs premultiplied alpha
             let sr = overlay_data[idx] as u32;
             let sg = overlay_data[idx + 1] as u32;
             let sb = overlay_data[idx + 2] as u32;

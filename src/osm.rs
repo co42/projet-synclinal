@@ -8,6 +8,7 @@ use std::path::Path;
 use crate::config::*;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Trail {
     pub id: i64,
     pub name: Option<String>,
