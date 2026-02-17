@@ -1,6 +1,8 @@
 mod config;
+mod export;
 mod garmin;
 mod gpx;
+mod grid;
 mod matching;
 mod osm;
 mod render;
@@ -72,6 +74,21 @@ enum Commands {
         /// Tile provider
         #[arg(short = 'p', long, default_value = "opentopomap")]
         tile_provider: TileProvider,
+    },
+
+    /// Export segments and grid data as JSON for the web UI
+    Export {
+        /// Directory containing GPX files
+        #[arg(short, long, default_value = "activities")]
+        activities_dir: String,
+
+        /// Output JSON file path
+        #[arg(short, long, default_value = "web/data.json")]
+        output: String,
+
+        /// Grid cell size in meters
+        #[arg(long, default_value_t = 200.0)]
+        grid_size: f64,
     },
 
     /// Sync new activities from Garmin and re-render the map
@@ -174,6 +191,19 @@ async fn main() -> Result<()> {
             let tile_map =
                 tiles::fetch_and_stitch(&client, zoom, resolve_provider(&tile_provider)).await?;
             render::render_debug_png(&tile_map, &segments, &output)?;
+        }
+
+        Commands::Export {
+            activities_dir,
+            output,
+            grid_size,
+        } => {
+            let client = build_client()?;
+            let (_trails, segments) = osm::fetch_trails(&client).await?;
+            let activities = gpx::load_activities(&activities_dir)?;
+            let coverage = matching::compute_coverage(&segments, &activities);
+            let grid_result = grid::compute_grid(&segments, &coverage, grid_size);
+            export::export_json(&segments, &coverage, &grid_result, &output)?;
         }
 
         Commands::Update {

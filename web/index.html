@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Synclinal de Saou — Trail Challenge</title>
+        <link
+            rel="stylesheet"
+            href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+        />
+        <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }
+            #map {
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+            }
+
+            #panel {
+                position: absolute;
+                top: 12px;
+                left: 12px;
+                background: rgba(255, 255, 255, 0.92);
+                backdrop-filter: blur(8px);
+                border-radius: 10px;
+                padding: 16px;
+                min-width: 220px;
+                box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+                z-index: 10;
+                font-size: 14px;
+            }
+            #panel h2 {
+                font-size: 15px;
+                margin-bottom: 12px;
+                color: #333;
+            }
+            .score-block {
+                margin-bottom: 12px;
+            }
+            .score-label {
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: #888;
+                margin-bottom: 2px;
+            }
+            .score-bar {
+                background: #e8e8e8;
+                border-radius: 4px;
+                height: 8px;
+                overflow: hidden;
+                margin-bottom: 2px;
+            }
+            .score-fill {
+                height: 100%;
+                border-radius: 4px;
+                transition: width 0.3s;
+            }
+            .score-fill.segments {
+                background: #22c55e;
+            }
+            .score-fill.grid {
+                background: #22c55e;
+            }
+            .score-value {
+                font-size: 22px;
+                font-weight: 700;
+                color: #222;
+            }
+            .score-detail {
+                font-size: 11px;
+                color: #999;
+            }
+
+            .controls {
+                border-top: 1px solid #e0e0e0;
+                padding-top: 10px;
+                margin-top: 4px;
+            }
+            .controls label {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                cursor: pointer;
+                font-size: 13px;
+                color: #555;
+                margin-bottom: 4px;
+            }
+
+            #tooltip {
+                position: absolute;
+                pointer-events: none;
+                background: rgba(0, 0, 0, 0.8);
+                color: white;
+                padding: 6px 10px;
+                border-radius: 6px;
+                font-size: 12px;
+                z-index: 20;
+                display: none;
+                white-space: nowrap;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+
+        <div id="panel">
+            <h2>Synclinal de Saou</h2>
+            <div class="score-block">
+                <div class="score-label">Segment Challenge</div>
+                <div class="score-bar">
+                    <div
+                        class="score-fill segments"
+                        id="seg-bar"
+                        style="width: 0%"
+                    ></div>
+                </div>
+                <span class="score-value" id="seg-pct">—</span>
+                <span class="score-detail" id="seg-detail"></span>
+            </div>
+            <div class="score-block">
+                <div class="score-label">Grid Challenge</div>
+                <div class="score-bar">
+                    <div
+                        class="score-fill grid"
+                        id="grid-bar"
+                        style="width: 0%"
+                    ></div>
+                </div>
+                <span class="score-value" id="grid-pct">—</span>
+                <span class="score-detail" id="grid-detail"></span>
+            </div>
+            <div class="controls">
+                <label
+                    ><input type="checkbox" id="toggle-segments" checked />
+                    Segments</label
+                >
+                <label
+                    ><input type="checkbox" id="toggle-grid" checked /> Grid
+                    <span
+                        id="grid-cell-size"
+                        style="color: #999; font-size: 11px"
+                    ></span
+                ></label>
+                <label
+                    ><input type="checkbox" id="toggle-dim" /> Dim
+                    background</label
+                >
+            </div>
+        </div>
+
+        <div id="tooltip"></div>
+
+        <script>
+            const DATA_URL = "data.json";
+
+            const map = new maplibregl.Map({
+                container: "map",
+                style: {
+                    version: 8,
+                    sources: {
+                        opentopo: {
+                            type: "raster",
+                            tiles: [
+                                "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+                            ],
+                            tileSize: 256,
+                            attribution:
+                                '&copy; <a href="https://opentopomap.org">OpenTopoMap</a> contributors',
+                            maxzoom: 17,
+                        },
+                    },
+                    layers: [
+                        {
+                            id: "opentopo-layer",
+                            type: "raster",
+                            source: "opentopo",
+                        },
+                    ],
+                },
+                center: [5.125, 44.651],
+                zoom: 13,
+                maxZoom: 17,
+            });
+
+            map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+            let DATA = null;
+            // Track which cells are active (deactivated cells excluded from scoring)
+            let cellActive = {};
+
+            map.on("load", async () => {
+                const resp = await fetch(DATA_URL);
+                DATA = await resp.json();
+
+                // Show grid cell size
+                document.getElementById("grid-cell-size").textContent =
+                    `(${DATA.grid.cell_size_m}m)`;
+
+                // Initialize cell active states
+                for (const f of DATA.cells.features) {
+                    cellActive[f.properties.id] = f.properties.active;
+                }
+
+                // --- Segments source & layers ---
+                map.addSource("segments", {
+                    type: "geojson",
+                    data: DATA.segments,
+                });
+
+                // Uncovered glow
+                map.addLayer({
+                    id: "segments-uncovered-glow",
+                    type: "line",
+                    source: "segments",
+                    filter: ["==", ["get", "covered"], false],
+                    paint: {
+                        "line-color": "#ef4444",
+                        "line-width": 8,
+                        "line-opacity": 0.15,
+                        "line-blur": 4,
+                    },
+                });
+
+                // Uncovered segments — red
+                map.addLayer({
+                    id: "segments-uncovered",
+                    type: "line",
+                    source: "segments",
+                    filter: ["==", ["get", "covered"], false],
+                    paint: {
+                        "line-color": "#ef4444",
+                        "line-width": 3,
+                        "line-opacity": 0.9,
+                    },
+                });
+
+                // Covered glow
+                map.addLayer({
+                    id: "segments-covered-glow",
+                    type: "line",
+                    source: "segments",
+                    filter: ["==", ["get", "covered"], true],
+                    paint: {
+                        "line-color": "#22c55e",
+                        "line-width": 8,
+                        "line-opacity": 0.2,
+                        "line-blur": 4,
+                    },
+                });
+
+                // Covered segments — green
+                map.addLayer({
+                    id: "segments-covered",
+                    type: "line",
+                    source: "segments",
+                    filter: ["==", ["get", "covered"], true],
+                    paint: {
+                        "line-color": "#22c55e",
+                        "line-width": 3,
+                        "line-opacity": 0.9,
+                    },
+                });
+
+                // --- Grid source & layers ---
+                map.addSource("grid", {
+                    type: "geojson",
+                    data: DATA.cells,
+                });
+
+                // Not visited (active) — red fill
+                map.addLayer(
+                    {
+                        id: "grid-active-fill",
+                        type: "fill",
+                        source: "grid",
+                        filter: [
+                            "all",
+                            ["==", ["get", "active"], true],
+                            ["==", ["get", "visited"], false],
+                        ],
+                        paint: {
+                            "fill-color": "#ef4444",
+                            "fill-opacity": 0.35,
+                        },
+                    },
+                    "segments-covered-glow",
+                );
+
+                map.addLayer(
+                    {
+                        id: "grid-active",
+                        type: "line",
+                        source: "grid",
+                        filter: [
+                            "all",
+                            ["==", ["get", "active"], true],
+                            ["==", ["get", "visited"], false],
+                        ],
+                        paint: {
+                            "line-color": "#ef4444",
+                            "line-width": 1,
+                            "line-opacity": 0.6,
+                        },
+                    },
+                    "segments-covered-glow",
+                );
+
+                // Visited — green fill
+                map.addLayer(
+                    {
+                        id: "grid-visited-fill",
+                        type: "fill",
+                        source: "grid",
+                        filter: [
+                            "all",
+                            ["==", ["get", "active"], true],
+                            ["==", ["get", "visited"], true],
+                        ],
+                        paint: {
+                            "fill-color": "#22c55e",
+                            "fill-opacity": 0.45,
+                        },
+                    },
+                    "segments-covered-glow",
+                );
+
+                map.addLayer(
+                    {
+                        id: "grid-visited-outline",
+                        type: "line",
+                        source: "grid",
+                        filter: [
+                            "all",
+                            ["==", ["get", "active"], true],
+                            ["==", ["get", "visited"], true],
+                        ],
+                        paint: {
+                            "line-color": "#16a34a",
+                            "line-width": 1,
+                            "line-opacity": 0.7,
+                        },
+                    },
+                    "segments-covered-glow",
+                );
+
+                // Deactivated — gray
+                map.addLayer(
+                    {
+                        id: "grid-deactivated",
+                        type: "fill",
+                        source: "grid",
+                        filter: ["==", ["get", "active"], false],
+                        paint: {
+                            "fill-color": "#999",
+                            "fill-opacity": 0.15,
+                        },
+                    },
+                    "segments-covered-glow",
+                );
+
+                updateScores();
+
+                // --- Click to toggle grid cells ---
+                map.on("click", "grid-active-fill", toggleCell);
+                map.on("click", "grid-active", toggleCell);
+                map.on("click", "grid-visited-fill", toggleCell);
+                map.on("click", "grid-visited-outline", toggleCell);
+                map.on("click", "grid-deactivated", toggleCell);
+
+                // --- Hover tooltip for segments ---
+                const tooltip = document.getElementById("tooltip");
+
+                map.on("mousemove", "segments-covered", (e) => {
+                    map.getCanvas().style.cursor = "pointer";
+                    const p = e.features[0].properties;
+                    tooltip.innerHTML = `${p.length_m.toFixed(0)}m &middot; ${(p.coverage_pct * 100).toFixed(0)}% covered`;
+                    tooltip.style.display = "block";
+                    tooltip.style.left = e.point.x + 12 + "px";
+                    tooltip.style.top = e.point.y - 12 + "px";
+                });
+
+                map.on("mousemove", "segments-uncovered", (e) => {
+                    map.getCanvas().style.cursor = "pointer";
+                    const p = e.features[0].properties;
+                    tooltip.innerHTML = `${p.length_m.toFixed(0)}m &middot; not covered`;
+                    tooltip.style.display = "block";
+                    tooltip.style.left = e.point.x + 12 + "px";
+                    tooltip.style.top = e.point.y - 12 + "px";
+                });
+
+                map.on("mouseleave", "segments-covered", () => {
+                    map.getCanvas().style.cursor = "";
+                    tooltip.style.display = "none";
+                });
+                map.on("mouseleave", "segments-uncovered", () => {
+                    map.getCanvas().style.cursor = "";
+                    tooltip.style.display = "none";
+                });
+            });
+
+            function toggleCell(e) {
+                if (!e.features.length) return;
+                const cellId = e.features[0].properties.id;
+                cellActive[cellId] = !cellActive[cellId];
+
+                // Update the feature's active property in the data
+                for (const f of DATA.cells.features) {
+                    if (f.properties.id === cellId) {
+                        f.properties.active = cellActive[cellId];
+                        break;
+                    }
+                }
+
+                // Refresh GeoJSON source
+                map.getSource("grid").setData(DATA.cells);
+                updateScores();
+            }
+
+            function updateScores() {
+                if (!DATA) return;
+
+                // Build set of active cell IDs
+                const activeCellIds = new Set();
+                for (const f of DATA.cells.features) {
+                    if (f.properties.active) activeCellIds.add(f.properties.id);
+                }
+
+                // Segment challenge: only count segments that have at least one cell in an active cell
+                let totalKm = 0;
+                let coveredKm = 0;
+                for (const f of DATA.segments.features) {
+                    const p = f.properties;
+                    const cells =
+                        typeof p.cells === "string"
+                            ? JSON.parse(p.cells)
+                            : p.cells;
+                    const inActive = cells.some((c) => activeCellIds.has(c));
+                    if (!inActive) continue;
+                    totalKm += p.length_m / 1000;
+                    if (p.covered) coveredKm += p.length_m / 1000;
+                }
+
+                const segPct = totalKm > 0 ? (coveredKm / totalKm) * 100 : 0;
+                document.getElementById("seg-pct").textContent =
+                    segPct.toFixed(1) + "%";
+                document.getElementById("seg-bar").style.width = segPct + "%";
+                document.getElementById("seg-detail").textContent =
+                    `${coveredKm.toFixed(1)} / ${totalKm.toFixed(1)} km`;
+
+                // Grid challenge: active cells with trails
+                let totalCells = 0;
+                let visitedCells = 0;
+                for (const f of DATA.cells.features) {
+                    if (!f.properties.active) continue;
+                    totalCells++;
+                    if (f.properties.visited) visitedCells++;
+                }
+
+                const gridPct =
+                    totalCells > 0 ? (visitedCells / totalCells) * 100 : 0;
+                document.getElementById("grid-pct").textContent =
+                    gridPct.toFixed(1) + "%";
+                document.getElementById("grid-bar").style.width = gridPct + "%";
+                document.getElementById("grid-detail").textContent =
+                    `${visitedCells} / ${totalCells} cells`;
+            }
+
+            // --- Layer toggles ---
+            document
+                .getElementById("toggle-segments")
+                .addEventListener("change", (e) => {
+                    const vis = e.target.checked ? "visible" : "none";
+                    map.setLayoutProperty(
+                        "segments-covered",
+                        "visibility",
+                        vis,
+                    );
+                    map.setLayoutProperty(
+                        "segments-uncovered",
+                        "visibility",
+                        vis,
+                    );
+                    map.setLayoutProperty(
+                        "segments-covered-glow",
+                        "visibility",
+                        vis,
+                    );
+                    map.setLayoutProperty(
+                        "segments-uncovered-glow",
+                        "visibility",
+                        vis,
+                    );
+                });
+
+            document
+                .getElementById("toggle-grid")
+                .addEventListener("change", (e) => {
+                    const vis = e.target.checked ? "visible" : "none";
+                    map.setLayoutProperty(
+                        "grid-active-fill",
+                        "visibility",
+                        vis,
+                    );
+                    map.setLayoutProperty("grid-active", "visibility", vis);
+                    map.setLayoutProperty(
+                        "grid-visited-fill",
+                        "visibility",
+                        vis,
+                    );
+                    map.setLayoutProperty(
+                        "grid-visited-outline",
+                        "visibility",
+                        vis,
+                    );
+                    map.setLayoutProperty(
+                        "grid-deactivated",
+                        "visibility",
+                        vis,
+                    );
+                });
+
+            document
+                .getElementById("toggle-dim")
+                .addEventListener("change", (e) => {
+                    map.setPaintProperty(
+                        "opentopo-layer",
+                        "raster-opacity",
+                        e.target.checked ? 0.4 : 1,
+                    );
+                    map.setPaintProperty(
+                        "opentopo-layer",
+                        "raster-saturation",
+                        e.target.checked ? -0.5 : 0,
+                    );
+                });
+        </script>
+    </body>
+</html>
